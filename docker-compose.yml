@@ -1,0 +1,13 @@
+version: '3'
+
+services:
+  face-verification-api:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./uploads:/app/uploads
+    restart: always
+    environment:
+      - FLASK_ENV=production
+    command: gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 "app:app"

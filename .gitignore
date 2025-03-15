@@ -1,0 +1,20 @@
+# Python Virtual Environment
+face_recog_env/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# dlib pre-compiled files
+dlib-19.24.99-cp312-cp312-win_amd64.pyd
+
+# Uploads directory (if you don't want to track uploaded files)
+uploads/
+
+# OS generated files
+.DS_Store # For macOS
+Thumbs.db # For Windows
+
+# Other files you might want to exclude
+*.log
+*.tmp
