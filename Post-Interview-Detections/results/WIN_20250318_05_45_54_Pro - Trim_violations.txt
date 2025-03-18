@@ -1,0 +1,22 @@
+Cheating Detection Results for: C:\Users\danis\Pictures\Camera Roll\WIN_20250318_05_45_54_Pro - Trim.mp4
+Video duration: 56.41 seconds
+
+Total violations detected: 11
+
+Cell Phone Violations (2):
+  0:00:47
+  0:00:50
+
+Looking Away Violations (2):
+  0:00:07
+  0:00:41
+
+Person Missing Violations (7):
+  0:00:09
+  0:00:12
+  0:00:16
+  0:00:23
+  0:00:27
+  0:00:30
+  0:00:35
+

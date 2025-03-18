@@ -1,5 +1,6 @@
 # Python Virtual Environment
-face_recog_env/
+Face-Compare/face_recog_env/
+Post-Interview-Detections/post_interview_cheating_detection_env/
 
 # Python bytecode
 __pycache__/
@@ -18,3 +19,6 @@ Thumbs.db # For Windows
 # Other files you might want to exclude
 *.log
 *.tmp
+
+yolov8n.pt
+yolov8x.pt
