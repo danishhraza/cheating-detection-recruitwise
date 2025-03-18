@@ -76,6 +76,9 @@ class ExamCheatingDetector:
             "looking_away": [],
             "person_missing": []
         }
+
+        # Time tracking
+        self.processing_time = 0
         
         print(f"Video loaded: {self.total_frames} frames, {self.video_duration:.2f} seconds")
         print(f"Using device: {self.device}")
@@ -258,6 +261,10 @@ class ExamCheatingDetector:
             # Clear CUDA cache periodically to prevent memory overflow
             if self.device == 'cuda' and frame_count % (self.fps * 60) == 0:  # Every minute of video
                 torch.cuda.empty_cache()
+
+        # Record total processing time
+        self.processing_time = time.time() - start_time
+        print(f"Processing completed in {self.processing_time:.2f} seconds")
         
         # Clean up
         self.cap.release()
@@ -296,6 +303,7 @@ class ExamCheatingDetector:
         with open(output_file, 'w') as f:
             f.write(f"Cheating Detection Results for: {self.video_path}\n")
             f.write(f"Video duration: {self.video_duration:.2f} seconds\n\n")
+            f.write(f"Processing time: {self.processing_time:.2f} seconds\n\n")
             
             violation_count = sum(len(timestamps) for timestamps in self.violations.values())
             f.write(f"Total violations detected: {violation_count}\n\n")
