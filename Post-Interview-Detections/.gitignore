@@ -1,0 +1,42 @@
+# Python virtual environment
+post_interview_cheating_detection_env/
+venv/
+env/
+.env/
+
+# Results and uploads directories
+results/
+uploads/
+
+# YOLO model weights (large files)
+*.pt
+yolov8n.pt
+yolov8x.pt
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Streamlit
+.streamlit/
+
+# OS specific files
+.DS_Store
+Thumbs.db

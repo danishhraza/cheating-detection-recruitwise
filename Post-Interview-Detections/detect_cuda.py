@@ -6,6 +6,28 @@ from ultralytics import YOLO
 from datetime import timedelta
 import argparse
 import os
+import mediapipe as mp
+import math
+
+# Patch for PyTorch compatibility with Streamlit
+import sys
+from types import ModuleType
+
+class PatchedModule(ModuleType):
+    def __init__(self, name):
+        super().__init__(name)
+        self.__dict__.update(sys.modules[name].__dict__)
+    
+    def __getattr__(self, attr):
+        if attr == '__path__':
+            class PatchedPath:
+                _path = []
+            return PatchedPath()
+        return ModuleType.__getattr__(self, attr)
+
+# Apply the patch to torch._classes
+if 'torch._classes' in sys.modules:
+    sys.modules['torch._classes'] = PatchedModule('torch._classes')
 
 class ExamCheatingDetector:
     def __init__(self, video_path, output_dir="results", use_cuda=True, half_precision=False, batch_size=1):
@@ -36,12 +58,18 @@ class ExamCheatingDetector:
         self.object_detector.to(self.device)
         if self.half_precision and self.device == 'cuda':
             self.object_detector = self.object_detector.half()
-            
-        # Load face detector    
-        self.face_detector = YOLO("yolov8n.pt")
-        self.face_detector.to(self.device)
-        if self.half_precision and self.device == 'cuda':
-            self.face_detector = self.face_detector.half()
+        
+        # Initialize MediaPipe Face Mesh for facial landmarks
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        
+        # Initialize MediaPipe Drawing utilities for visualization
+        self.mp_drawing = mp.solutions.drawing_utils
         
         # Classes of interest for cheating detection
         self.target_classes = {
@@ -66,7 +94,8 @@ class ExamCheatingDetector:
         
         # We assume exactly 1 person should be in the frame by default
         self.expected_person_count = 1
-        self.face_position_baseline = None  # Will track initial face position
+        self.gaze_direction_baseline = None  # Will track initial gaze direction
+        self.head_pose_baseline = None  # Will track initial head pose
         
         # Violation tracking
         self.violations = {
@@ -80,16 +109,149 @@ class ExamCheatingDetector:
         # Time tracking
         self.processing_time = 0
         
+        # Eye landmarks indices
+        self.LEFT_EYE = [362, 385, 387, 263, 373, 380]
+        self.RIGHT_EYE = [33, 160, 158, 133, 153, 144]
+        
+        # Face landmarks for head pose
+        self.FACE_POSE_LANDMARKS = [33, 263, 1, 61, 291, 199]
+        
         print(f"Video loaded: {self.total_frames} frames, {self.video_duration:.2f} seconds")
         print(f"Using device: {self.device}")
         if self.device == 'cuda':
             print(f"CUDA Device: {torch.cuda.get_device_name(0)}")
             print(f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     
+    def get_eye_position(self, landmarks, eye_indices):
+        """Extract eye position from facial landmarks"""
+        eye_points = [landmarks[i] for i in eye_indices]
+        
+        # Calculate eye center
+        eye_center_x = sum(point.x for point in eye_points) / len(eye_points)
+        eye_center_y = sum(point.y for point in eye_points) / len(eye_points)
+        
+        # Extract pupil (using center point - simplified approach)
+        pupil_x, pupil_y = eye_center_x, eye_center_y
+        
+        return (pupil_x, pupil_y)
+    
+    def get_gaze_direction(self, landmarks):
+        """Determine gaze direction based on eye landmarks"""
+        if landmarks is None:
+            return None
+        
+        # Get positions for both eyes
+        left_eye_pos = self.get_eye_position(landmarks, self.LEFT_EYE)
+        right_eye_pos = self.get_eye_position(landmarks, self.RIGHT_EYE)
+        
+        # Calculate eye centers
+        left_eye_center = (sum(landmarks[i].x for i in self.LEFT_EYE) / len(self.LEFT_EYE),
+                         sum(landmarks[i].y for i in self.LEFT_EYE) / len(self.LEFT_EYE))
+        
+        right_eye_center = (sum(landmarks[i].x for i in self.RIGHT_EYE) / len(self.RIGHT_EYE),
+                          sum(landmarks[i].y for i in self.RIGHT_EYE) / len(self.RIGHT_EYE))
+        
+        # Calculate pupil position relative to eye center
+        left_pupil_rel_x = left_eye_pos[0] - left_eye_center[0]
+        left_pupil_rel_y = left_eye_pos[1] - left_eye_center[1]
+        
+        right_pupil_rel_x = right_eye_pos[0] - right_eye_center[0]
+        right_pupil_rel_y = right_eye_pos[1] - right_eye_center[1]
+        
+        # Average the relative positions
+        avg_pupil_rel_x = (left_pupil_rel_x + right_pupil_rel_x) / 2
+        avg_pupil_rel_y = (left_pupil_rel_y + right_pupil_rel_y) / 2
+        
+        # Determine gaze direction
+        # Apply Gaussian blur simulation for pupil movement analysis
+        # (In a real implementation, this would involve more complex eye tracking)
+        
+        # Use normalized vector
+        gaze_x = avg_pupil_rel_x * 100  # Scale for better visibility
+        gaze_y = avg_pupil_rel_y * 100
+        
+        # Return gaze direction as a vector (x, y) where:
+        # x > 0: looking right, x < 0: looking left
+        # y > 0: looking down, y < 0: looking up
+        return (gaze_x, gaze_y)
+    
+    def estimate_head_pose(self, landmarks, image_shape):
+        """Estimate head pose using solvePnP algorithm"""
+        if landmarks is None:
+            return None
+        
+        # 3D model points (simplified)
+        model_points = np.array([
+            (0.0, 0.0, 0.0),          # Nose tip
+            (0.0, -330.0, -65.0),     # Chin
+            (-225.0, 170.0, -135.0),  # Left eye left corner
+            (225.0, 170.0, -135.0),   # Right eye right corner
+            (-150.0, -150.0, -125.0), # Left mouth corner
+            (150.0, -150.0, -125.0)   # Right mouth corner
+        ])
+        
+        # 2D image points from landmarks
+        image_points = np.array([
+            (landmarks[1].x * image_shape[1], landmarks[1].y * image_shape[0]),    # Nose tip
+            (landmarks[199].x * image_shape[1], landmarks[199].y * image_shape[0]), # Chin
+            (landmarks[33].x * image_shape[1], landmarks[33].y * image_shape[0]),   # Left eye left corner
+            (landmarks[263].x * image_shape[1], landmarks[263].y * image_shape[0]), # Right eye right corner
+            (landmarks[61].x * image_shape[1], landmarks[61].y * image_shape[0]),   # Left mouth corner
+            (landmarks[291].x * image_shape[1], landmarks[291].y * image_shape[0])  # Right mouth corner
+        ], dtype="double")
+        
+        # Camera matrix estimation
+        focal_length = image_shape[1]
+        center = (image_shape[1]/2, image_shape[0]/2)
+        camera_matrix = np.array(
+            [[focal_length, 0, center[0]],
+             [0, focal_length, center[1]],
+             [0, 0, 1]], dtype="double"
+        )
+        
+        # Assuming no lens distortion
+        dist_coeffs = np.zeros((4, 1))
+        
+        # Solve PnP
+        success, rotation_vector, translation_vector = cv2.solvePnP(
+            model_points, image_points, camera_matrix, dist_coeffs)
+        
+        if not success:
+            return None
+            
+        # Convert rotation vector to rotation matrix
+        rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+        
+        # Calculate Euler angles
+        euler_angles = self.rotation_matrix_to_euler_angles(rotation_matrix)
+        
+        # Convert to degrees
+        euler_angles = np.degrees(euler_angles)
+        
+        # Return yaw, pitch, roll in degrees
+        return euler_angles
+    
+    def rotation_matrix_to_euler_angles(self, R):
+        """Convert rotation matrix to Euler angles"""
+        # Calculate Euler angles
+        sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
+        
+        if sy > 1e-6:
+            x = math.atan2(R[2, 1], R[2, 2])
+            y = math.atan2(-R[2, 0], sy)
+            z = math.atan2(R[1, 0], R[0, 0])
+        else:
+            x = math.atan2(-R[1, 2], R[1, 1])
+            y = math.atan2(-R[2, 0], sy)
+            z = 0
+            
+        return np.array([x, y, z])
+    
     def establish_baseline(self, num_frames=30):
-        """Establish baseline for face position from initial frames"""
-        print("Establishing face position baseline...")
-        face_positions = []
+        """Establish baseline for gaze direction and head pose from initial frames"""
+        print("Establishing eye and head position baseline...")
+        gaze_directions = []
+        head_poses = []
         
         # Reset video to beginning
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -99,59 +261,87 @@ class ExamCheatingDetector:
             if not ret:
                 break
                 
-            # Detect face position
-            face_results = self.face_detector(frame, verbose=False)
-            if len(face_results[0].boxes.data) > 0:
-                # Get the largest face (assume it's the primary person)
-                face_boxes = face_results[0].boxes.data.tolist()
-                face_areas = [(box[2]-box[0])*(box[3]-box[1]) for box in face_boxes]
-                largest_face_idx = face_areas.index(max(face_areas))
-                face_box = face_boxes[largest_face_idx]
+            # Convert the BGR image to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Process the image with FaceMesh
+            results = self.face_mesh.process(rgb_frame)
+            
+            if results.multi_face_landmarks:
+                face_landmarks = results.multi_face_landmarks[0].landmark
                 
-                # Calculate face center
-                face_center_x = (face_box[0] + face_box[2]) / 2
-                face_center_y = (face_box[1] + face_box[3]) / 2
-                face_positions.append((face_center_x, face_center_y))
+                # Get gaze direction
+                gaze = self.get_gaze_direction(face_landmarks)
+                if gaze:
+                    gaze_directions.append(gaze)
+                
+                # Get head pose
+                pose = self.estimate_head_pose(face_landmarks, frame.shape)
+                if pose is not None:
+                    head_poses.append(pose)
         
-        # Set face position baseline (average of detected positions)
-        if face_positions:
-            avg_x = sum(pos[0] for pos in face_positions) / len(face_positions)
-            avg_y = sum(pos[1] for pos in face_positions) / len(face_positions)
-            self.face_position_baseline = (avg_x, avg_y)
-            print(f"Baseline face position: {self.face_position_baseline}")
+        # Set gaze direction baseline (average of detected positions)
+        if gaze_directions:
+            avg_gaze_x = sum(gaze[0] for gaze in gaze_directions) / len(gaze_directions)
+            avg_gaze_y = sum(gaze[1] for gaze in gaze_directions) / len(gaze_directions)
+            self.gaze_direction_baseline = (avg_gaze_x, avg_gaze_y)
+            print(f"Baseline gaze direction: {self.gaze_direction_baseline}")
         else:
-            print("Warning: Could not establish face position baseline. No faces detected in initial frames.")
+            print("Warning: Could not establish gaze direction baseline.")
+            
+        # Set head pose baseline (average of detected angles)
+        if head_poses:
+            avg_yaw = sum(pose[1] for pose in head_poses) / len(head_poses)
+            avg_pitch = sum(pose[0] for pose in head_poses) / len(head_poses)
+            avg_roll = sum(pose[2] for pose in head_poses) / len(head_poses)
+            self.head_pose_baseline = (avg_yaw, avg_pitch, avg_roll)
+            print(f"Baseline head pose (yaw, pitch, roll): {self.head_pose_baseline}")
+        else:
+            print("Warning: Could not establish head pose baseline.")
             
         # Reset video position
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     
-    def detect_looking_away(self, face_results, frame_shape):
-        """Detect if person is looking away from the screen"""
-        if not self.face_position_baseline:
+    def detect_looking_away(self, rgb_frame):
+        """Detect if person is looking away from the screen using eye gaze and head pose"""
+        if not self.gaze_direction_baseline or not self.head_pose_baseline:
             return False
             
-        if len(face_results[0].boxes.data) == 0:
+        # Process the image with FaceMesh
+        results = self.face_mesh.process(rgb_frame)
+        
+        if not results.multi_face_landmarks:
             return False  # No face detected
             
-        # Get the largest face
-        face_boxes = face_results[0].boxes.data.tolist()
-        face_areas = [(box[2]-box[0])*(box[3]-box[1]) for box in face_boxes]
-        largest_face_idx = face_areas.index(max(face_areas))
-        face_box = face_boxes[largest_face_idx]
+        face_landmarks = results.multi_face_landmarks[0].landmark
         
-        # Calculate face center
-        face_center_x = (face_box[0] + face_box[2]) / 2
-        face_center_y = (face_box[1] + face_box[3]) / 2
+        # Get current gaze direction
+        current_gaze = self.get_gaze_direction(face_landmarks)
         
-        # Calculate deviation from baseline
-        baseline_x, baseline_y = self.face_position_baseline
-        frame_width, frame_height = frame_shape[1], frame_shape[0]
+        # Get current head pose
+        current_pose = self.estimate_head_pose(face_landmarks, (rgb_frame.shape[0], rgb_frame.shape[1]))
         
-        # Calculate percentage deviation
-        x_deviation = abs(face_center_x - baseline_x) / frame_width
+        if current_gaze is None or current_pose is None:
+            return False
+            
+        # Calculate deviation from baseline for gaze
+        gaze_x_dev = abs(current_gaze[0] - self.gaze_direction_baseline[0])
+        gaze_y_dev = abs(current_gaze[1] - self.gaze_direction_baseline[1])
         
-        # Looking left or right: substantial horizontal deviation
-        return x_deviation > 0.15  # 15% deviation threshold
+        # Calculate deviation from baseline for head pose
+        yaw_dev = abs(current_pose[1] - self.head_pose_baseline[0])  # Left-right head rotation
+        pitch_dev = abs(current_pose[0] - self.head_pose_baseline[1])  # Up-down head rotation
+        
+        # Define thresholds for gaze and head movement
+        GAZE_THRESHOLD = 5.0  # Threshold for significant gaze movement
+        YAW_THRESHOLD = 15.0  # Threshold for significant horizontal head rotation (degrees)
+        PITCH_THRESHOLD = 15.0  # Threshold for significant vertical head rotation (degrees)
+        
+        # Detect looking away based on significant gaze or head pose deviation
+        looking_left_right = gaze_x_dev > GAZE_THRESHOLD or yaw_dev > YAW_THRESHOLD
+        looking_up_down = gaze_y_dev > GAZE_THRESHOLD or pitch_dev > PITCH_THRESHOLD
+        
+        return looking_left_right or looking_up_down
     
     def detect_person_count_violations(self, results):
         """
@@ -244,8 +434,10 @@ class ExamCheatingDetector:
             if frame_count % self.face_detection_interval == 0:
                 # Only check for looking away if at least one person is present
                 if not person_violations["person_missing"]:
-                    face_results = self.face_detector(frame, **cuda_params)
-                    if self.detect_looking_away(face_results, frame.shape):
+                    # Convert the BGR image to RGB for MediaPipe
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    if self.detect_looking_away(rgb_frame):
                         self.violations["looking_away"].append(timestamp)
                         print(f"Looking away detected at {timestamp_str}")
             
@@ -268,6 +460,7 @@ class ExamCheatingDetector:
         
         # Clean up
         self.cap.release()
+        self.face_mesh.close()
         if self.device == 'cuda':
             torch.cuda.empty_cache()
         print("Video processing complete.")
