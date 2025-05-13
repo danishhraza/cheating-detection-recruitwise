@@ -1,6 +1,7 @@
 # Python virtual environment
 post_interview_cheating_detection_env/
 venv/
+new_env/
 env/
 .env/
 

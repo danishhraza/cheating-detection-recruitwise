@@ -1,3 +1,4 @@
+#remove face detection from this. face detection happening in app2.py. MAKE FastAPI of this. 
 import streamlit as st
 import cv2
 import numpy as np
