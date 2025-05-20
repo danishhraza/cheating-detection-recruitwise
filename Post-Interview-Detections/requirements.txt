@@ -1,17 +1,10 @@
-# Exam Cheating Detection - Dependencies
-# Core libraries
-numpy>=1.23.5
-opencv-python>=4.7.0
-torch>=2.0.0
-torchvision>=0.15.0
-ultralytics>=8.0.0  # For YOLO models
-
-# Web application
-streamlit>=1.24.0
-matplotlib>=3.7.1
-pandas>=2.0.0
-Pillow>=9.5.0  # Required for image handling
-
-# Utilities
-python-dateutil>=2.8.2
-mediapipe>=0.10.0
+opencv-python==4.11.0.86
+numpy==1.26.4
+mediapipe==0.10.21
+fastapi==0.115.12
+pydantic==2.11.4
+uvicorn==0.34.2
+boto3==1.38.16
+botocore==1.38.16
+requests==2.32.3
+ultralytics==8.3.92
